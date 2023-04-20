@@ -10,12 +10,25 @@
 #include <filesystem>
 #include <iostream>
 #include <thread>
+#include <vector>
 
 #include "util.h"
 
 using namespace std;
 
 const long long MEG = 1024 * 1024;
+
+string id;
+int child_pid;
+
+void sigint(int sig) {
+    kill(child_pid, SIGKILL);
+    rmdir(((string) "/sys/fs/cgroup/cpu/sbl." + id).c_str());
+    rmdir(((string) "/sys/fs/cgroup/cpuacct/sbl." + id).c_str());
+    rmdir(((string) "/sys/fs/cgroup/memory/sbl." + id).c_str());
+    rmdir(((string) "/sys/fs/cgroup/pids/sbl." + id).c_str());
+    exit(EXIT_FAILURE);
+}
 
 struct args {
     char **argv;
@@ -49,10 +62,21 @@ int child(void *arg) {
     syscall(SYS_pivot_root, ".", ".");
     umount2(".", MNT_DETACH);
 
-    setuid(65534);
-    setgid(65534);
+    int pid = fork();
+    if (pid) {
+        int status;
+        waitpid(pid, &status, 0);
+        if (WIFEXITED(status)) exit(WEXITSTATUS(status));
+        exit(EXIT_FAILURE);
+    } else {
+        string s = "PATH=/bin:/usr/bin";
+        vector<char *> envp{s.data(), nullptr};
 
-    execve(argv[7], argv + 7, nullptr);
+        setuid(65534);
+        setgid(65534);
+
+        execve(argv[7], argv + 7, nullptr);
+    }
     return 1;
 }
 
@@ -85,12 +109,12 @@ int main(int argc, char **argv) {
         perror("mkdtemp");
         return EXIT_FAILURE;
     }
-    string cg_dir = cgroup_dir;
-    string id = cg_dir.substr(cg_dir.length() - 6, 6);
+    string cpu_cg_dir = cgroup_dir;
+    id = cpu_cg_dir.substr(cpu_cg_dir.length() - 6, 6);
     args ar;
     ar.argv = argv;
     ar.id = id;
-    cg_dir = "/sys/fs/cgroup";
+    string cg_dir = "/sys/fs/cgroup";
     int ret = mkdir((cg_dir + "/cpuacct/sbl." + id).c_str(), 0700);
     if (ret && errno != EEXIST) {
         perror("mkdir");
@@ -106,6 +130,7 @@ int main(int argc, char **argv) {
         perror("mkdir");
         return EXIT_FAILURE;
     }
+    signal(SIGINT, sigint);
     write_file(cg_dir + "/cpu/sbl." + id + "/cpu.cfs_period_us", "100000");
     write_file(cg_dir + "/cpu/sbl." + id + "/cpu.cfs_quota_us", "100000");
     write_file(cg_dir + "/memory/sbl." + id + "/memory.limit_in_bytes",
@@ -114,7 +139,7 @@ int main(int argc, char **argv) {
                to_string(memory_limit));
     write_file(cg_dir + "/pids/sbl." + id + "/pids.max", to_string(pid_limit));
 
-    pid_t child_pid = clone(child, stack_top, flags, &ar);
+    child_pid = clone(child, stack_top, flags, &ar);
     if (child_pid < 0) {
         perror("clone");
         rmdir((cg_dir + "/cpu/sbl." + id).c_str());
@@ -127,8 +152,9 @@ int main(int argc, char **argv) {
 
     for (int t = 0; t < rt_limit; t += 100) {
         this_thread::sleep_for(chrono::milliseconds(100));
+        status = 0;
         waitpid(child_pid, &status, WNOHANG);
-        if (WIFEXITED(status)) {
+        if (WIFEXITED(status) || WIFSIGNALED(status)) {
             ofstream st(report);
             st << (WIFEXITED(status) ? "ok" : "signalled") << endl;
             st << "exit "
@@ -141,7 +167,6 @@ int main(int argc, char **argv) {
                << read_file(cg_dir + "/memory/sbl." + id +
                             "/memory.memsw.max_usage_in_bytes");
             st.close();
-
             rmdir((cg_dir + "/cpu/sbl." + id).c_str());
             rmdir((cg_dir + "/cpuacct/sbl." + id).c_str());
             rmdir((cg_dir + "/memory/sbl." + id).c_str());

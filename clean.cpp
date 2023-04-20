@@ -1,4 +1,5 @@
 #include <sys/mount.h>
+#include <unistd.h>
 #include <iostream>
 #include <string>
 using namespace std;
@@ -16,6 +17,10 @@ int main(int argc, char **argv) {
     }
     if (umount(s.c_str())) {
         perror("umount");
+        return 1;
+    }
+    if (rmdir(s.c_str())) {
+        perror("rmdir");
         return 1;
     }
 }

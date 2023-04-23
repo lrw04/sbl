@@ -36,6 +36,7 @@ const int stack_size = 1024 * 1024;
 static char child_stack[stack_size];
 
 int child_pid;
+string id;
 
 int pivot_root(const char *new_root, const char *put_old) {
     return syscall(SYS_pivot_root, new_root, put_old);
@@ -45,7 +46,7 @@ int child_main(void *arg) {
     char **argv = (char **)arg;
     char *target = argv[1], *stdinf = argv[5], *stdoutf = argv[6],
          *stderrf = argv[7], *path = argv[8];
-    int tl = atoi(argv[2]) + 1000;
+    int tl = atoi(argv[2]) + 500;
     if (sethostname("sandbox", 7) == -1) ERREXIT("sethostname");
     if (mount(nullptr, "/", nullptr, MS_REC | MS_PRIVATE, nullptr))
         ERREXIT("mount");
@@ -53,6 +54,7 @@ int child_main(void *arg) {
     if (pivot_root(".", ".")) ERREXIT("pivot_root");
     if (umount2(".", MNT_DETACH)) ERREXIT("umount2");
     if (chdir("/tmp")) ERREXIT("chdir");
+    if (mount("proc", "/proc", "proc", 0, nullptr)) ERREXIT("mount");
     freopen(stdinf, "r", stdin);
     freopen(stdoutf, "w", stdout);
     freopen(stderrf, "w", stderr);
@@ -65,18 +67,18 @@ int child_main(void *arg) {
             if (!ret) continue;
             if (ret == -1) ERREXIT("waitpid");
             exit((WIFEXITED(status) ? (WEXITSTATUS(status) ? 1 : 0)
-                                    : (WIFSIGNALED(status) ? 1 : 0)));
+                                    : (WIFSIGNALED(status) ? 3 : 0)));
         }
         exit(2);
     } else {
-        char path_env[100];
-        strcpy(path_env, "PATH=/bin:/sbin");
-        char *envp[] = {path_env, nullptr};
+        char *envp[] = {nullptr};
         rlimit rl;
         rl.rlim_cur = rl.rlim_max = RLIM_INFINITY;
         setrlimit(RLIMIT_STACK, &rl);
         for (int fd = STDERR_FILENO + 1; fd < sysconf(_SC_OPEN_MAX); fd++)
             close(fd);
+        setuid(65534);
+        setgid(65534);
         execve(path, argv + 8, envp);
         exit(EXIT_FAILURE);
     }
@@ -105,11 +107,18 @@ void run_main(int argc, char **argv) {
     int status;
     waitpid(child_pid, &status, 0);
     if (WIFEXITED(status)) {
-        cout << "exited " << WEXITSTATUS(status) << endl;
-    } else if (WIFSIGNALED(status)) {
-        cout << "signalled " << WTERMSIG(status) << endl;
+        int ret = WEXITSTATUS(status);
+        if (ret == 0) {
+            cout << "ok" << endl;
+        } else if (ret == 1) {
+            cout << "runtime-error" << endl;
+        } else if (ret == 2) {
+            cout << "time-limit-exceeded" << endl;
+        } else if (ret == 3) {
+            cout << "security-violation" << endl;
+        }
     } else {
-        cout << "unknown" << endl;
+        cout << "unknown-error" << endl;
     }
 }
 

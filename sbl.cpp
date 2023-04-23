@@ -87,6 +87,8 @@ int child_main(void *arg) {
 
 void sigint_handler(int sig) {
     kill(child_pid, SIGKILL);
+    cout << "interrupted" << endl;
+    // TODO: cleanup cgroups
     exit(EXIT_FAILURE);
 }
 
@@ -100,6 +102,7 @@ void run_main(int argc, char **argv) {
 
     const int flags = CLONE_NEWNS | CLONE_NEWIPC | CLONE_NEWNET | CLONE_NEWPID |
                       CLONE_NEWUTS | SIGCHLD;
+    // TODO: prepare cgroups
     child_pid =
         clone(child_main, child_stack + sizeof child_stack, flags, argv);
     if (child_pid < 0) ERREXIT("clone");
@@ -120,6 +123,8 @@ void run_main(int argc, char **argv) {
     } else {
         cout << "unknown-error" << endl;
     }
+    // TODO: retrieve resource usage
+    // TODO: cleanup cgroups
 }
 
 void del_main(int argc, char **argv) {

@@ -145,7 +145,12 @@ void run_main(int argc, char **argv) {
         } else if (ret == 2) {
             cout << "time-limit-exceeded" << endl;
         } else if (ret == 3) {
-            cout << "security-violation" << endl;
+            if (stoi(get_key(read_file(cgroup + "/memory.events"),
+                             "oom_kill"))) {
+                cout << "memory-limit-exceeded" << endl;
+            } else {
+                cout << "security-violation" << endl;
+            }
         }
     } else {
         cout << "unknown-error" << endl;

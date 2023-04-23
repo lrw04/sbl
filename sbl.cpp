@@ -125,6 +125,8 @@ void run_main(int argc, char **argv) {
     write_file(cgroup + "/cpu.max", "100000");
     write_file(cgroup + "/memory.high", to_string(mem_limit));
     write_file(cgroup + "/memory.max", to_string(mem_limit));
+    write_file(cgroup + "/memory.swap.high", to_string(mem_limit));
+    write_file(cgroup + "/memory.swap.max", to_string(mem_limit));
     write_file(cgroup + "/pids.max", to_string(pids_limit));
     child_pid =
         clone(child_main, child_stack + sizeof child_stack, flags, argv);
@@ -148,7 +150,8 @@ void run_main(int argc, char **argv) {
     } else {
         cout << "unknown-error" << endl;
     }
-    cout << "memory " << read_file(cgroup + "/memory.peak");
+    cout << "memory " << stoll(read_file(cgroup + "/memory.peak")) / 1024 / 1024
+         << endl;
     cout << "cpu "
          << stoll(get_key(read_file(cgroup + "/cpu.stat"), "usage_usec")) / 1000
          << endl;

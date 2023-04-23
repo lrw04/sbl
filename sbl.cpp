@@ -36,17 +36,23 @@ const int stack_size = 1024 * 1024;
 static char child_stack[stack_size];
 
 int child_pid;
-string id;
+int pipe_fd[2];
+string cgroup;
 
 int pivot_root(const char *new_root, const char *put_old) {
     return syscall(SYS_pivot_root, new_root, put_old);
 }
 
 int child_main(void *arg) {
+    close(pipe_fd[1]);
+    char ch;
+    if (read(pipe_fd[0], &ch, 1)) ERREXIT("read");
+    close(pipe_fd[0]);
+
     char **argv = (char **)arg;
-    char *target = argv[1], *stdinf = argv[5], *stdoutf = argv[6],
-         *stderrf = argv[7], *path = argv[8];
-    int tl = atoi(argv[2]) + 500;
+    char *target = argv[1], *stdinf = argv[6], *stdoutf = argv[7],
+         *stderrf = argv[8], *path = argv[9];
+    int tl = atoi(argv[3]) + 500;
     if (sethostname("sandbox", 7) == -1) ERREXIT("sethostname");
     if (mount(nullptr, "/", nullptr, MS_REC | MS_PRIVATE, nullptr))
         ERREXIT("mount");
@@ -66,8 +72,7 @@ int child_main(void *arg) {
             int ret = waitpid(pid, &status, WNOHANG);
             if (!ret) continue;
             if (ret == -1) ERREXIT("waitpid");
-            exit((WIFEXITED(status) ? (WEXITSTATUS(status) ? 1 : 0)
-                                    : (WIFSIGNALED(status) ? 3 : 0)));
+            exit((WIFEXITED(status) ? (WEXITSTATUS(status) ? 1 : 0) : 3));
         }
         exit(2);
     } else {
@@ -79,7 +84,7 @@ int child_main(void *arg) {
             close(fd);
         setuid(65534);
         setgid(65534);
-        execve(path, argv + 8, envp);
+        execve(path, argv + 9, envp);
         exit(EXIT_FAILURE);
     }
     return 0;
@@ -88,24 +93,44 @@ int child_main(void *arg) {
 void sigint_handler(int sig) {
     kill(child_pid, SIGKILL);
     cout << "interrupted" << endl;
-    // TODO: cleanup cgroups
+    rmdir(cgroup.c_str());
     exit(EXIT_FAILURE);
 }
 
+string get_key(string s, string k) {
+    stringstream ss(s);
+    string kk, vv;
+    while (ss >> kk >> vv) {
+        if (kk == k) return vv;
+    }
+    return "";
+}
+
 void run_main(int argc, char **argv) {
-    if (argc < 9) {
-        cerr << "Usage: run <target> <time> <memory> <pids> <stdin> <stdout> "
-                "<stderr> <cmd>"
+    if (argc < 10) {
+        cerr << "Usage: run <target> <cgroup> <time> <memory> <pids> <stdin> "
+                "<stdout> <stderr> <cmd>"
              << endl;
         exit(EXIT_FAILURE);
     }
 
+    if (pipe(pipe_fd) == -1) ERREXIT("pipe");
+    long long mem_limit = stoll(argv[4]) * 1024 * 1024;
+    int pids_limit = stoi(argv[5]);
     const int flags = CLONE_NEWNS | CLONE_NEWIPC | CLONE_NEWNET | CLONE_NEWPID |
                       CLONE_NEWUTS | SIGCHLD;
-    // TODO: prepare cgroups
+    cgroup = argv[2];
+    cgroup += "/sbl.XXXXXX";
+    if (!mkdtemp(cgroup.data())) ERREXIT("mkdtemp");
+    write_file(cgroup + "/cpu.max", "100000");
+    write_file(cgroup + "/memory.high", to_string(mem_limit));
+    write_file(cgroup + "/memory.max", to_string(mem_limit));
+    write_file(cgroup + "/pids.max", to_string(pids_limit));
     child_pid =
         clone(child_main, child_stack + sizeof child_stack, flags, argv);
+    write_file(cgroup + "/cgroup.procs", to_string(child_pid));
     if (child_pid < 0) ERREXIT("clone");
+    close(pipe_fd[1]);
     signal(SIGINT, sigint_handler);
     int status;
     waitpid(child_pid, &status, 0);
@@ -123,8 +148,11 @@ void run_main(int argc, char **argv) {
     } else {
         cout << "unknown-error" << endl;
     }
-    // TODO: retrieve resource usage
-    // TODO: cleanup cgroups
+    cout << "memory " << read_file(cgroup + "/memory.peak");
+    cout << "cpu "
+         << stoll(get_key(read_file(cgroup + "/cpu.stat"), "usage_usec")) / 1000
+         << endl;
+    rmdir(cgroup.c_str());
 }
 
 void del_main(int argc, char **argv) {
